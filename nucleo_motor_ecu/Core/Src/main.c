@@ -21,7 +21,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "stdio.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -43,7 +43,7 @@
 UART_HandleTypeDef huart2;
 
 /* USER CODE BEGIN PV */
-
+static volatile uint8_t g_btn_pressed = 0U;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -56,7 +56,19 @@ static void MX_USART2_UART_Init(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-
+int __io_putchar(int ch)
+{
+  uint8_t c= (uint8_t)ch;
+  (void)HAL_UART_Transmit(&huart2, &c, 1U, HAL_MAX_DELAY);
+  return ch;
+}
+void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
+{
+  if (GPIO_Pin == B1_Pin)
+  {
+    g_btn_pressed = 1U;
+  }
+}
 /* USER CODE END 0 */
 
 /**
@@ -90,7 +102,10 @@ int main(void)
   MX_GPIO_Init();
   MX_USART2_UART_Init();
   /* USER CODE BEGIN 2 */
-
+  uint32_t blink_ms = 500U;
+  uint32_t last_toggle = HAL_GetTick();
+  uint32_t last_btn =0U;
+  printf("Day1 start\r\n");
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -100,8 +115,24 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-    HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
-    HAL_Delay(500);
+    uint32_t now = HAL_GetTick();
+
+    if(g_btn_pressed != 0U)
+    {
+      g_btn_pressed = 0U;
+      if((now - last_btn) >= 50U)
+      {
+        last_btn = now;
+        blink_ms = (blink_ms == 500U) ? 100U : 500U;
+        printf("blink %lu ms\r\n", (unsigned long)blink_ms);
+      }
+    }
+
+    if((now - last_toggle) >= blink_ms)
+    {
+      last_toggle = now;
+      HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
+    }
   }
   /* USER CODE END 3 */
 }
