@@ -76,6 +76,7 @@
 | LED LD2 | PA5 | 내장 (D13) | — | Day 1 |
 | 버튼 B1 | PC13 | 내장 | — | Day 1 |
 | UART2 TX/RX | PA2/PA3 | 내장 (ST-LINK 가상 COM) | PC | Day 1 |
+| 디버그 UART 미러 (USART3 TX) | PB10 | D6 | 로직 분석기 | Day 2 |
 | 디버그 타이밍 핀 | PB0 | A3 | 로직 분석기 | Day 2 |
 | 포텐셔미터 | PA0 (ADC1_IN0) | A0 | 포텐셔미터 OUT | Day 3 |
 | 모터 PWM | PA6 (TIM3_CH1) | D12 | TB6612 PWMA | Day 4 |
@@ -147,7 +148,7 @@
    - main에서 플래그를 보고 깜빡임 주기를 500ms ↔ 100ms로 바꾼다.
 6. 로직 분석기로 본다.
    - CH0 → PA5. D13 소켓에 M/M 점퍼를 꽂아 연결한다.
-   - CH1 → PA2 (CN10-35 모포 핀).
+   - CH1 → USART3 TX (PB10, D6). printf를 USART2와 USART3에 같이 보낸다. PA2는 기본 설정에서 보드 핀으로 나오지 않는다(UM1724, SB62/SB63 OFF).
    - PulseView 샘플레이트 1MHz 이상, UART 디코더 115200 8N1로 설정한다.
 
 **완료 기준**
@@ -159,7 +160,7 @@
 **막히면**
 - 보드가 인식되지 않으면 CubeIDE의 Help → ST-LINK 업그레이드를 실행한다.
 - printf에서 float가 안 나오면 정수로 출력하거나 프로젝트 설정의 "Use float with printf"를 켠다.
-- D1 핀에서는 UART가 안 보인다. Nucleo는 기본 설정에서 PA2/PA3가 ST-LINK로만 연결되어 있으므로 CN10-35에서 잰다.
+- D1 핀과 CN10-35에서는 UART가 안 보인다. Nucleo는 기본 설정에서 PA2/PA3가 ST-LINK로만 연결되어 있다(SB13/SB14 ON, SB62/SB63 OFF, UM1724). USART3(PB10/D6) 미러로 잰다.
 
 ---
 
