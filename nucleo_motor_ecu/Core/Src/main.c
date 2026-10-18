@@ -22,6 +22,10 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "stdio.h"
+#include "stm32f1xx_hal_adc_ex.h"
+#include <stdint.h>
+#include <stdbool.h>
+#include "motor.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -37,6 +41,10 @@
 #define LED_PIN_POS        (5U)       // PA5 = 5번 핀
 #define LED_PIN_MASK       (1UL << LED_PIN_POS) // 0x0020 5번 비트만 1인 값
 #define LED_CRL_SHIFT      (LED_PIN_POS * 4U)   //CRL에서 PA5 설정이 시작하는 비트 = 20 (핀당 4비트)
+#define ADC_MAX_COUNT      (4095U) //12비트 ADC 최대값
+#define ADC_MA_LEN         (16U) //이동평균에 쓰는 샘플 수 
+#define ADC_MA_SHIFT       (4U) // 16 = 2^4 -> 나누기 대신 4칸 오른쪽 이동
+
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -45,7 +53,11 @@
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
+ADC_HandleTypeDef hadc1;
+DMA_HandleTypeDef hdma_adc1;
+
 TIM_HandleTypeDef htim2;
+TIM_HandleTypeDef htim3;
 
 UART_HandleTypeDef huart2;
 UART_HandleTypeDef huart3;
@@ -56,14 +68,18 @@ static volatile uint32_t g_ms_tick = 0U;
 static volatile uint32_t g_flag_10ms = 0U;
 static volatile uint32_t g_flag_100ms = 0U;
 static volatile uint32_t g_flag_1000ms = 0U;
+static volatile uint16_t adc_buf[1];    // DMA가 여기에 최신 변환 값을 계속 덮어 씀(ISR/DMA와 main이 공유 -> volatile)
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
+static void MX_DMA_Init(void);
 static void MX_USART2_UART_Init(void);
 static void MX_TIM2_Init(void);
 static void MX_USART3_UART_Init(void);
+static void MX_ADC1_Init(void);
+static void MX_TIM3_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -138,9 +154,12 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  MX_DMA_Init();
   MX_USART2_UART_Init();
   MX_TIM2_Init();
   MX_USART3_UART_Init();
+  MX_ADC1_Init();
+  MX_TIM3_Init();
   /* USER CODE BEGIN 2 */
   uint32_t blink_ms = 500U;
   uint32_t blink_acc = 0U;
@@ -150,7 +169,27 @@ int main(void)
   uint32_t run_100ms = 0U;
 
   LedReg_Init();          // LED를 레지스터로 다시 설정(HAL 설정을 덮어씀)
-  printf("Day2 start\r\n");
+  uint16_t ma_buf[ADC_MA_LEN] = {0U}; // 최근 16개 샘플 보관
+  uint32_t ma_sum = 0U; //16개의 합
+  uint32_t ma_idx = 0U; // 다음에 덮어쓸 칸
+  uint16_t adc_raw = 0U; //필터 전 값
+  uint16_t adc_avg = 0U; //필터 후 값
+  uint16_t raw_min = ADC_MAX_COUNT, raw_max = 0U; //1초 동안의 필터 전 최소/최대
+  uint16_t avg_min = ADC_MAX_COUNT, avg_max = 0U; //1초 동안의 필터 후 최소/최대
+
+  if(HAL_ADCEx_Calibration_Start(&hadc1) != HAL_OK)  //F1 전용 자체 보정. 시작 전에 해야함
+  {
+    Error_Handler();
+  }
+  if(HAL_ADC_Start_DMA(&hadc1, (uint32_t *)adc_buf, 1U) != HAL_OK) // 변환 시작 + DMA가 adc_but[0]에 계속 저장
+  {
+    Error_Handler();
+  }
+   __HAL_DMA_DISABLE_IT(&hdma_adc1, (DMA_IT_TC | DMA_IT_HT));   // 완료·절반 완료 인터럽트만 끔. 전송 자체(DMA 복사)는 계속됨
+  motor_init();
+  motor_enable(true);
+  motor_set(300);      /* 30% 테스트, 모터 전원은 아직 미연결 */
+  printf("Day3 start\r\n");
 
   if (HAL_TIM_Base_Start_IT(&htim2) != HAL_OK)
   {
@@ -183,6 +222,17 @@ int main(void)
       g_flag_10ms = 0U;     // 깃발을 먼저 내림
       HAL_GPIO_WritePin(DBG_TIMING_GPIO_Port, DBG_TIMING_Pin, GPIO_PIN_SET); //작업 시작 ->PBO High
       run_10ms++;           // 셀자 작업(지금은 횟수 세기뿐, 6일차에 PI 제어가 들어옴)
+      adc_raw = adc_buf[0]; // DMA가 채워둔 최신 값을 한 번 집어 옴
+      ma_sum -= ma_buf[ma_idx]; // 가장 오래된 값을 합에서 빼고
+      ma_buf[ma_idx] = adc_raw; //그 자리에 새 값을 넣고
+      ma_sum += adc_raw; //합에 더함
+      ma_idx = (ma_idx + 1U) % ADC_MA_LEN; //다음칸 (15다음은0)
+      adc_avg = (uint16_t)(ma_sum >> ADC_MA_SHIFT); // 합/16 = 평균
+      if(adc_raw < raw_min) {raw_min = adc_raw;} //노이즈 측정: 최소/최대 갱신
+      if(adc_raw > raw_max) {raw_max = adc_raw;}
+      if(adc_avg < avg_min) {avg_min = adc_avg;}
+      if(adc_avg > avg_max) {avg_max = adc_avg;}
+
       HAL_GPIO_WritePin(DBG_TIMING_GPIO_Port, DBG_TIMING_Pin, GPIO_PIN_RESET); //작업 끝 ->PBO Low
     }
 
@@ -191,6 +241,7 @@ int main(void)
     {
       g_flag_100ms= 0U;
       run_100ms++;
+      printf("adc raw=%4u avg=%4u pct=%3u%%\r\n", (unsigned)adc_raw,(unsigned)adc_avg, (unsigned)(((uint32_t)adc_avg*100U) / ADC_MAX_COUNT)); //0~4095 -> 0~100% 
       blink_acc += TASK_100MS_PERIOD;   //100ms 흘렀음
       if(blink_acc >= blink_ms)         //정한 간격만큼 쌓이면
       {
@@ -208,6 +259,9 @@ int main(void)
               (unsigned long)tick_count, (unsigned long)g_ms_tick,
               (unsigned long)HAL_GetTick(),
               (unsigned long)run_10ms, (unsigned long)run_100ms);
+      printf("noise raw=%u avg=%u\r\n", (unsigned)(raw_max - raw_min), (unsigned)(avg_max - avg_min));
+      raw_min = ADC_MAX_COUNT; raw_max = 0U; //다음 1초를 다시 잼
+      avg_min = ADC_MAX_COUNT; avg_max = 0U; 
       tick_count++;
       run_10ms = 0U;        //다음 1초를 다시 셈
       run_100ms = 0U;
@@ -224,6 +278,7 @@ void SystemClock_Config(void)
 {
   RCC_OscInitTypeDef RCC_OscInitStruct = {0};
   RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
+  RCC_PeriphCLKInitTypeDef PeriphClkInit = {0};
 
   /** Initializes the RCC Oscillators according to the specified parameters
   * in the RCC_OscInitTypeDef structure.
@@ -252,6 +307,59 @@ void SystemClock_Config(void)
   {
     Error_Handler();
   }
+  PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_ADC;
+  PeriphClkInit.AdcClockSelection = RCC_ADCPCLK2_DIV6;
+  if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInit) != HAL_OK)
+  {
+    Error_Handler();
+  }
+}
+
+/**
+  * @brief ADC1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_ADC1_Init(void)
+{
+
+  /* USER CODE BEGIN ADC1_Init 0 */
+
+  /* USER CODE END ADC1_Init 0 */
+
+  ADC_ChannelConfTypeDef sConfig = {0};
+
+  /* USER CODE BEGIN ADC1_Init 1 */
+
+  /* USER CODE END ADC1_Init 1 */
+
+  /** Common config
+  */
+  hadc1.Instance = ADC1;
+  hadc1.Init.ScanConvMode = ADC_SCAN_DISABLE;
+  hadc1.Init.ContinuousConvMode = ENABLE;
+  hadc1.Init.DiscontinuousConvMode = DISABLE;
+  hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START;
+  hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
+  hadc1.Init.NbrOfConversion = 1;
+  if (HAL_ADC_Init(&hadc1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Regular Channel
+  */
+  sConfig.Channel = ADC_CHANNEL_0;
+  sConfig.Rank = ADC_REGULAR_RANK_1;
+  sConfig.SamplingTime = ADC_SAMPLETIME_55CYCLES_5;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN ADC1_Init 2 */
+
+  /* USER CODE END ADC1_Init 2 */
+
 }
 
 /**
@@ -296,6 +404,65 @@ static void MX_TIM2_Init(void)
   /* USER CODE BEGIN TIM2_Init 2 */
 
   /* USER CODE END TIM2_Init 2 */
+
+}
+
+/**
+  * @brief TIM3 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM3_Init(void)
+{
+
+  /* USER CODE BEGIN TIM3_Init 0 */
+
+  /* USER CODE END TIM3_Init 0 */
+
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+  TIM_OC_InitTypeDef sConfigOC = {0};
+
+  /* USER CODE BEGIN TIM3_Init 1 */
+
+  /* USER CODE END TIM3_Init 1 */
+  htim3.Instance = TIM3;
+  htim3.Init.Prescaler = 0;
+  htim3.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim3.Init.Period = 3199;
+  htim3.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim3.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim3, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_TIM_PWM_Init(&htim3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim3, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sConfigOC.OCMode = TIM_OCMODE_PWM1;
+  sConfigOC.Pulse = 0;
+  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
+  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
+  if (HAL_TIM_PWM_ConfigChannel(&htim3, &sConfigOC, TIM_CHANNEL_1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM3_Init 2 */
+
+  /* USER CODE END TIM3_Init 2 */
+  HAL_TIM_MspPostInit(&htim3);
 
 }
 
@@ -366,6 +533,22 @@ static void MX_USART3_UART_Init(void)
 }
 
 /**
+  * Enable DMA controller clock
+  */
+static void MX_DMA_Init(void)
+{
+
+  /* DMA controller clock enable */
+  __HAL_RCC_DMA1_CLK_ENABLE();
+
+  /* DMA interrupt init */
+  /* DMA1_Channel1_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Channel1_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Channel1_IRQn);
+
+}
+
+/**
   * @brief GPIO Initialization Function
   * @param None
   * @retval None
@@ -384,10 +567,10 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOB_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOA, LD2_Pin|GPIO_PIN_8|GPIO_PIN_9, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(DBG_TIMING_GPIO_Port, DBG_TIMING_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOB, DBG_TIMING_Pin|GPIO_PIN_5, GPIO_PIN_RESET);
 
   /*Configure GPIO pin : B1_Pin */
   GPIO_InitStruct.Pin = B1_Pin;
@@ -395,19 +578,19 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(B1_GPIO_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO pin : LD2_Pin */
-  GPIO_InitStruct.Pin = LD2_Pin;
+  /*Configure GPIO pins : LD2_Pin PA8 PA9 */
+  GPIO_InitStruct.Pin = LD2_Pin|GPIO_PIN_8|GPIO_PIN_9;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(LD2_GPIO_Port, &GPIO_InitStruct);
+  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
-  /*Configure GPIO pin : DBG_TIMING_Pin */
-  GPIO_InitStruct.Pin = DBG_TIMING_Pin;
+  /*Configure GPIO pins : DBG_TIMING_Pin PB5 */
+  GPIO_InitStruct.Pin = DBG_TIMING_Pin|GPIO_PIN_5;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(DBG_TIMING_GPIO_Port, &GPIO_InitStruct);
+  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
   /* EXTI interrupt init*/
   HAL_NVIC_SetPriority(EXTI15_10_IRQn, 0, 0);
