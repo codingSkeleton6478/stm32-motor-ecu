@@ -4,7 +4,7 @@
 extern TIM_HandleTypeDef htim3;   /* main.c에서 CubeMX가 만든 TIM3 핸들 */
 
 #define MOTOR_PERIOD_CNT   3200       /* ARR+1 */
-#define MOTOR_DUTY_LIMIT   300        /* 첫 구동 안전: 30% 상한 */
+#define MOTOR_DUTY_LIMIT   1000        /* 일단 100프로 ㄱㄱ */
 
 void motor_init(void)
 {

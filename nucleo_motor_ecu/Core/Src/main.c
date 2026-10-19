@@ -26,6 +26,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include "motor.h"
+#include "cmd.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -188,7 +189,7 @@ int main(void)
    __HAL_DMA_DISABLE_IT(&hdma_adc1, (DMA_IT_TC | DMA_IT_HT));   // 완료·절반 완료 인터럽트만 끔. 전송 자체(DMA 복사)는 계속됨
   motor_init();
   motor_enable(true);
-  motor_set(300);      /* 30% 테스트, 모터 전원은 아직 미연결 */
+  cmd_init();
   printf("Day3 start\r\n");
 
   if (HAL_TIM_Base_Start_IT(&htim2) != HAL_OK)
@@ -204,6 +205,7 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+    cmd_poll();
     if(g_btn_pressed != 0U)
     {
       g_btn_pressed = 0U;
@@ -241,7 +243,7 @@ int main(void)
     {
       g_flag_100ms= 0U;
       run_100ms++;
-      printf("adc raw=%4u avg=%4u pct=%3u%%\r\n", (unsigned)adc_raw,(unsigned)adc_avg, (unsigned)(((uint32_t)adc_avg*100U) / ADC_MAX_COUNT)); //0~4095 -> 0~100% 
+      //printf("adc raw=%4u avg=%4u pct=%3u%%\r\n", (unsigned)adc_raw,(unsigned)adc_avg, (unsigned)(((uint32_t)adc_avg*100U) / ADC_MAX_COUNT)); //0~4095 -> 0~100% 
       blink_acc += TASK_100MS_PERIOD;   //100ms 흘렀음
       if(blink_acc >= blink_ms)         //정한 간격만큼 쌓이면
       {
