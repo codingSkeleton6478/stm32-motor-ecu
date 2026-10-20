@@ -27,6 +27,7 @@
 #include <stdbool.h>
 #include "motor.h"
 #include "cmd.h"
+#include "encoder.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -59,6 +60,7 @@ DMA_HandleTypeDef hdma_adc1;
 
 TIM_HandleTypeDef htim2;
 TIM_HandleTypeDef htim3;
+TIM_HandleTypeDef htim4;
 
 UART_HandleTypeDef huart2;
 UART_HandleTypeDef huart3;
@@ -81,6 +83,7 @@ static void MX_TIM2_Init(void);
 static void MX_USART3_UART_Init(void);
 static void MX_ADC1_Init(void);
 static void MX_TIM3_Init(void);
+static void MX_TIM4_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -161,6 +164,7 @@ int main(void)
   MX_USART3_UART_Init();
   MX_ADC1_Init();
   MX_TIM3_Init();
+  MX_TIM4_Init();
   /* USER CODE BEGIN 2 */
   uint32_t blink_ms = 500U;
   uint32_t blink_acc = 0U;
@@ -196,6 +200,7 @@ int main(void)
   {
     Error_Handler();
   }
+  encoder_init();
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -224,6 +229,7 @@ int main(void)
       g_flag_10ms = 0U;     // 깃발을 먼저 내림
       HAL_GPIO_WritePin(DBG_TIMING_GPIO_Port, DBG_TIMING_Pin, GPIO_PIN_SET); //작업 시작 ->PBO High
       run_10ms++;           // 셀자 작업(지금은 횟수 세기뿐, 6일차에 PI 제어가 들어옴)
+      encoder_update();     // ← 여기: 10ms마다 TIM4 카운터 차이를 누적
       adc_raw = adc_buf[0]; // DMA가 채워둔 최신 값을 한 번 집어 옴
       ma_sum -= ma_buf[ma_idx]; // 가장 오래된 값을 합에서 빼고
       ma_buf[ma_idx] = adc_raw; //그 자리에 새 값을 넣고
@@ -243,6 +249,8 @@ int main(void)
     {
       g_flag_100ms= 0U;
       run_100ms++;
+      printf("rpm_x10=%ld\r\n", (long)encoder_get_rpm_x10());
+      //printf("tot=%ld d=%d\r\n", (long)encoder_get_total(), (int)encoder_get_delta());
       //printf("adc raw=%4u avg=%4u pct=%3u%%\r\n", (unsigned)adc_raw,(unsigned)adc_avg, (unsigned)(((uint32_t)adc_avg*100U) / ADC_MAX_COUNT)); //0~4095 -> 0~100% 
       blink_acc += TASK_100MS_PERIOD;   //100ms 흘렀음
       if(blink_acc >= blink_ms)         //정한 간격만큼 쌓이면
@@ -465,6 +473,55 @@ static void MX_TIM3_Init(void)
 
   /* USER CODE END TIM3_Init 2 */
   HAL_TIM_MspPostInit(&htim3);
+
+}
+
+/**
+  * @brief TIM4 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM4_Init(void)
+{
+
+  /* USER CODE BEGIN TIM4_Init 0 */
+
+  /* USER CODE END TIM4_Init 0 */
+
+  TIM_Encoder_InitTypeDef sConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+
+  /* USER CODE BEGIN TIM4_Init 1 */
+
+  /* USER CODE END TIM4_Init 1 */
+  htim4.Instance = TIM4;
+  htim4.Init.Prescaler = 0;
+  htim4.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim4.Init.Period = 65535;
+  htim4.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim4.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  sConfig.EncoderMode = TIM_ENCODERMODE_TI12;
+  sConfig.IC1Polarity = TIM_ICPOLARITY_FALLING;
+  sConfig.IC1Selection = TIM_ICSELECTION_DIRECTTI;
+  sConfig.IC1Prescaler = TIM_ICPSC_DIV1;
+  sConfig.IC1Filter = 10;
+  sConfig.IC2Polarity = TIM_ICPOLARITY_RISING;
+  sConfig.IC2Selection = TIM_ICSELECTION_DIRECTTI;
+  sConfig.IC2Prescaler = TIM_ICPSC_DIV1;
+  sConfig.IC2Filter = 10;
+  if (HAL_TIM_Encoder_Init(&htim4, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim4, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM4_Init 2 */
+
+  /* USER CODE END TIM4_Init 2 */
 
 }
 
