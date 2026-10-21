@@ -48,6 +48,8 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Core/Src/motor.c
     Core/Src/cmd.c
     Core/Src/encoder.c
+    Core/Src/pi.c
+    Core/Src/ctrl.c
 )
 
 # Add include paths
