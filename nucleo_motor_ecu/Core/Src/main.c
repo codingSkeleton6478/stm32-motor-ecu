@@ -28,6 +28,7 @@
 #include "motor.h"
 #include "cmd.h"
 #include "encoder.h"
+#include "ctrl.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -193,14 +194,15 @@ int main(void)
    __HAL_DMA_DISABLE_IT(&hdma_adc1, (DMA_IT_TC | DMA_IT_HT));   // 완료·절반 완료 인터럽트만 끔. 전송 자체(DMA 복사)는 계속됨
   motor_init();
   motor_enable(true);
+  encoder_init();
+  ctrl_init();
   cmd_init();
-  printf("Day3 start\r\n");
+  printf("Day6 start\r\n");
 
   if (HAL_TIM_Base_Start_IT(&htim2) != HAL_OK)
   {
     Error_Handler();
   }
-  encoder_init();
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -227,9 +229,7 @@ int main(void)
     if(g_flag_10ms != 0U)
     {
       g_flag_10ms = 0U;     // 깃발을 먼저 내림
-      HAL_GPIO_WritePin(DBG_TIMING_GPIO_Port, DBG_TIMING_Pin, GPIO_PIN_SET); //작업 시작 ->PBO High
       run_10ms++;           // 셀자 작업(지금은 횟수 세기뿐, 6일차에 PI 제어가 들어옴)
-      encoder_update();     // ← 여기: 10ms마다 TIM4 카운터 차이를 누적
       adc_raw = adc_buf[0]; // DMA가 채워둔 최신 값을 한 번 집어 옴
       ma_sum -= ma_buf[ma_idx]; // 가장 오래된 값을 합에서 빼고
       ma_buf[ma_idx] = adc_raw; //그 자리에 새 값을 넣고
@@ -240,8 +240,13 @@ int main(void)
       if(adc_raw > raw_max) {raw_max = adc_raw;}
       if(adc_avg < avg_min) {avg_min = adc_avg;}
       if(adc_avg > avg_max) {avg_max = adc_avg;}
+      if (cmd_log_on())
+      {
+        printf("%lu,%d,%ld,%d\r\n", (unsigned long)g_ms_tick,
+               (int)(ctrl_get_target_rpm() * 10.0f),
+               (long)ctrl_get_rpm_x10(), (int)ctrl_get_duty());
+      }
 
-      HAL_GPIO_WritePin(DBG_TIMING_GPIO_Port, DBG_TIMING_Pin, GPIO_PIN_RESET); //작업 끝 ->PBO Low
     }
 
     // 100ms 태스크: LED 깜빡임
@@ -669,6 +674,9 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
     if ((g_ms_tick % TASK_10MS_PERIOD) == 0U)
     {
       g_flag_10ms = 1U;
+      HAL_GPIO_WritePin(DBG_TIMING_GPIO_Port, DBG_TIMING_Pin, GPIO_PIN_SET);   /* PB0 High: 제어 시작 */
+      ctrl_step_10ms();  /* 엔코더 -> PI -> PWM */
+      HAL_GPIO_WritePin(DBG_TIMING_GPIO_Port, DBG_TIMING_Pin, GPIO_PIN_RESET); /* PB0 Low: 제어 끝 */
     }
     if ((g_ms_tick % TASK_100MS_PERIOD) == 0U)
     {
