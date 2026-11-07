@@ -18,6 +18,8 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "ina219.h"
+#include "lcd.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -29,6 +31,9 @@
 #include "cmd.h"
 #include "encoder.h"
 #include "ctrl.h"
+#include "stm32f1xx_hal_def.h"
+#include "stm32f1xx_hal_gpio.h"
+#include "stm32f1xx_hal_i2c.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -47,7 +52,10 @@
 #define ADC_MAX_COUNT      (4095U) //12비트 ADC 최대값
 #define ADC_MA_LEN         (16U) //이동평균에 쓰는 샘플 수 
 #define ADC_MA_SHIFT       (4U) // 16 = 2^4 -> 나누기 대신 4칸 오른쪽 이동
-
+/* Day 7 실험: 1 = 제어 루프를 TIM2 ISR에서 실행(원래 방식, A)
+ *             0 = main loop의 10ms 태스크에서 실행(비교용, B)
+ * 실험이 끝나면 반드시 1로 되돌린다 */
+#define CTRL_IN_ISR        (1)
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -58,6 +66,8 @@
 /* Private variables ---------------------------------------------------------*/
 ADC_HandleTypeDef hadc1;
 DMA_HandleTypeDef hdma_adc1;
+
+I2C_HandleTypeDef hi2c1;
 
 TIM_HandleTypeDef htim2;
 TIM_HandleTypeDef htim3;
@@ -85,6 +95,7 @@ static void MX_USART3_UART_Init(void);
 static void MX_ADC1_Init(void);
 static void MX_TIM3_Init(void);
 static void MX_TIM4_Init(void);
+static void MX_I2C1_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -166,13 +177,20 @@ int main(void)
   MX_ADC1_Init();
   MX_TIM3_Init();
   MX_TIM4_Init();
+  MX_I2C1_Init();
   /* USER CODE BEGIN 2 */
+  printf("CTRL_IN_ISR=%d\r\n", CTRL_IN_ISR);
   uint32_t blink_ms = 500U;
   uint32_t blink_acc = 0U;
   uint32_t last_btn = 0U;
   uint32_t tick_count = 0U;
   uint32_t run_10ms = 0U;
   uint32_t run_100ms = 0U;
+  int16_t ina_i_x10 = 0;
+  uint16_t ina_bus_mv = 0U;
+  uint32_t ina_div = 0U;
+  uint32_t lcd_div = 0U; //100ms 태스크를 2번 세서 200ms마다 LCD갱신
+  char lcd_line[17]; //16글자 + 문자열 끝 표시 '\0' 1칸
 
   LedReg_Init();          // LED를 레지스터로 다시 설정(HAL 설정을 덮어씀)
   uint16_t ma_buf[ADC_MA_LEN] = {0U}; // 최근 16개 샘플 보관
@@ -198,6 +216,35 @@ int main(void)
   ctrl_init();
   cmd_init();
   printf("Day6 start\r\n");
+  printf("Day7 start\r\n");
+  /*Day 7: I2C 버스 스캔. 응답(ACK)하는 7비트 주소를 출력한다 */
+  {
+    uint32_t found = 0U;
+    for(uint16_t addr = 1U; addr < 128U; addr++)
+    {
+      /*HAL은 8비트 형식 주소를 받는다:7비트 주소를 한칸 왼쪽으로, bit0은 R/W자리*/
+      if(HAL_I2C_IsDeviceReady(&hi2c1, (uint16_t)(addr << 1), 1U, 10U) == HAL_OK)
+      {
+        printf(" found 0x%02X\r\n", (unsigned)addr);
+        found++;
+      }
+    }
+    printf("I2C scan: %lu device(s)\r\n", (unsigned long)found);
+  }
+  {
+    uint16_t cfg = 0U;
+    HAL_StatusTypeDef st = ina219_init(&hi2c1, &cfg);
+    printf("INA219 init=%d cfg=0x%04X\r\n",(int)st, (unsigned)cfg);
+  }
+    /* Day 7: LCD 초기화 + 시험 문구 */
+  {
+    HAL_StatusTypeDef st = lcd_init(&hi2c1);
+    printf("LCD init=%d\r\n", (int)st);          /* 0이면 성공 */
+    (void)lcd_set_cursor(0U, 0U);
+    (void)lcd_print("Day7 LCD OK");
+    (void)lcd_set_cursor(1U, 0U);
+    (void)lcd_print("Motor ECU");
+  }
 
   if (HAL_TIM_Base_Start_IT(&htim2) != HAL_OK)
   {
@@ -229,6 +276,14 @@ int main(void)
     if(g_flag_10ms != 0U)
     {
       g_flag_10ms = 0U;     // 깃발을 먼저 내림
+#if (CTRL_IN_ISR == 0)
+      /* B: main이 깃발을 확인했을 때야 실행된다.
+       *    main이 LCD 갱신(I2C 블로킹 약 20ms) 중이면 그게 끝날 때까지 늦어지고,
+       *    그 사이 깃발이 두 번 서도 한 번만 실행된다(한 주기 놓침) */
+      HAL_GPIO_WritePin(DBG_TIMING_GPIO_Port, DBG_TIMING_Pin, GPIO_PIN_SET);
+      ctrl_step_10ms();
+      HAL_GPIO_WritePin(DBG_TIMING_GPIO_Port, DBG_TIMING_Pin, GPIO_PIN_RESET);
+#endif      
       run_10ms++;           // 셀자 작업(지금은 횟수 세기뿐, 6일차에 PI 제어가 들어옴)
       adc_raw = adc_buf[0]; // DMA가 채워둔 최신 값을 한 번 집어 옴
       ma_sum -= ma_buf[ma_idx]; // 가장 오래된 값을 합에서 빼고
@@ -247,6 +302,12 @@ int main(void)
                (long)ctrl_get_rpm_x10(), (int)ctrl_get_duty());
       }
 
+      if(++ina_div >= 2U) /* 10ms x 2 = 20ms마다*/
+      {
+        ina_div = 0U;
+        (void)ina219_read(&ina_i_x10, &ina_bus_mv);
+      }
+
     }
 
     // 100ms 태스크: LED 깜빡임
@@ -254,7 +315,9 @@ int main(void)
     {
       g_flag_100ms= 0U;
       run_100ms++;
-      printf("rpm_x10=%ld\r\n", (long)encoder_get_rpm_x10());
+      printf("rpm_x10=%ld I_x10=%d mA V=%u mV\r\n", (long)encoder_get_rpm_x10(),
+      (int)ina_i_x10, (unsigned)ina_bus_mv);
+      //printf("rpm_x10=%ld\r\n", (long)encoder_get_rpm_x10());
       //printf("tot=%ld d=%d\r\n", (long)encoder_get_total(), (int)encoder_get_delta());
       //printf("adc raw=%4u avg=%4u pct=%3u%%\r\n", (unsigned)adc_raw,(unsigned)adc_avg, (unsigned)(((uint32_t)adc_avg*100U) / ADC_MAX_COUNT)); //0~4095 -> 0~100% 
       blink_acc += TASK_100MS_PERIOD;   //100ms 흘렀음
@@ -263,6 +326,30 @@ int main(void)
         blink_acc = 0U;                    //누적 시간 초기화
         LedReg_Toggle();
         /*HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin); //LED 토글, 레지스터로 LED 토글을 위해 잠시 비활성화*/
+      }
+      /* LCD 갱신 (200ms마다). I2C 블로킹 약 20ms라 ISR이 아닌 main loop에서 한다 */
+      if (++lcd_div >= 2U)
+      {
+        lcd_div = 0U;
+        int32_t rpm = (int32_t)ctrl_get_rpm_x10() / 10;        /* 0.1rpm 단위 → rpm 정수 */
+        int32_t tgt = (int32_t)ctrl_get_target_rpm();          /* 목표 rpm */
+        (void)snprintf(lcd_line, sizeof(lcd_line), "T:%3ld R:%3ld", (long)tgt, (long)rpm);
+        (void)lcd_print_line(0U, lcd_line);
+
+        if (ina219_is_valid() != 0U)
+        {
+          /* float printf를 안 쓰려고 정수로 나눠 소수점을 직접 만든다 (nano libc는 %f 미지원이 기본) */
+          (void)snprintf(lcd_line, sizeof(lcd_line), "I:%4dmA V:%u.%02u",
+                         (int)(ina_i_x10 / 10),                   /* 0.1mA 단위 → mA */
+                         (unsigned)(ina_bus_mv / 1000U),          /* 정수 V */
+                         (unsigned)((ina_bus_mv % 1000U) / 10U)); /* 소수 둘째 자리 */
+        }
+        else
+        {
+          /* 센서 값이 믿을 수 없으면 옛 숫자를 보여 주지 않는다 */
+          (void)snprintf(lcd_line, sizeof(lcd_line), "I:----mA V:-.--");
+        }
+        (void)lcd_print_line(1U, lcd_line);
       }
     }
 
@@ -275,6 +362,9 @@ int main(void)
               (unsigned long)HAL_GetTick(),
               (unsigned long)run_10ms, (unsigned long)run_100ms);
       printf("noise raw=%u avg=%u\r\n", (unsigned)(raw_max - raw_min), (unsigned)(avg_max - avg_min));
+      printf("ina vaild= %u err=%lu rec=%lu\r\n", (unsigned)ina219_is_valid(),
+              (unsigned long)ina219_get_err_count(),
+              (unsigned long)ina219_get_recover_count());
       raw_min = ADC_MAX_COUNT; raw_max = 0U; //다음 1초를 다시 잼
       avg_min = ADC_MAX_COUNT; avg_max = 0U; 
       tick_count++;
@@ -374,6 +464,40 @@ static void MX_ADC1_Init(void)
   /* USER CODE BEGIN ADC1_Init 2 */
 
   /* USER CODE END ADC1_Init 2 */
+
+}
+
+/**
+  * @brief I2C1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_I2C1_Init(void)
+{
+
+  /* USER CODE BEGIN I2C1_Init 0 */
+
+  /* USER CODE END I2C1_Init 0 */
+
+  /* USER CODE BEGIN I2C1_Init 1 */
+
+  /* USER CODE END I2C1_Init 1 */
+  hi2c1.Instance = I2C1;
+  hi2c1.Init.ClockSpeed = 100000;
+  hi2c1.Init.DutyCycle = I2C_DUTYCYCLE_2;
+  hi2c1.Init.OwnAddress1 = 0;
+  hi2c1.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
+  hi2c1.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
+  hi2c1.Init.OwnAddress2 = 0;
+  hi2c1.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
+  hi2c1.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
+  if (HAL_I2C_Init(&hi2c1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN I2C1_Init 2 */
+
+  /* USER CODE END I2C1_Init 2 */
 
 }
 
@@ -673,10 +797,18 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
     g_ms_tick++;
     if ((g_ms_tick % TASK_10MS_PERIOD) == 0U)
     {
-      g_flag_10ms = 1U;
+      g_flag_10ms = 1U; //main에게 10ms가 지났다는 알림을 보내는 코드
+      /* DAY6이전에 사용한 HAL Timer 코드
+      HAL_GPIO_WritePin(DBG_TIMING_GPIO_Port, DBG_TIMING_Pin, GPIO_PIN_SET);   // PB0 High: 제어 시작 
+      ctrl_step_10ms();  // 엔코더 -> PI -> PWM 
+      HAL_GPIO_WritePin(DBG_TIMING_GPIO_Port, DBG_TIMING_Pin, GPIO_PIN_RESET); /* PB0 Low: 제어 끝 */ 
+      //
+#if (CTRL_IN_ISR != 0)
+      /* A: ISR 안에서 바로 실행. main이 무엇을 하든(LCD 블로킹 중이어도) 10ms마다 끼어들어 실행된다 */
       HAL_GPIO_WritePin(DBG_TIMING_GPIO_Port, DBG_TIMING_Pin, GPIO_PIN_SET);   /* PB0 High: 제어 시작 */
-      ctrl_step_10ms();  /* 엔코더 -> PI -> PWM */
+      ctrl_step_10ms();          /* 엔코더 -> PI -> PWM */
       HAL_GPIO_WritePin(DBG_TIMING_GPIO_Port, DBG_TIMING_Pin, GPIO_PIN_RESET); /* PB0 Low: 제어 끝 */
+#endif
     }
     if ((g_ms_tick % TASK_100MS_PERIOD) == 0U)
     {

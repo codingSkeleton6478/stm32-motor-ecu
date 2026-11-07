@@ -50,6 +50,8 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Core/Src/encoder.c
     Core/Src/pi.c
     Core/Src/ctrl.c
+    Core/Src/ina219.c
+    Core/Src/lcd.c
 )
 
 # Add include paths
