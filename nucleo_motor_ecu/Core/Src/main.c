@@ -18,8 +18,6 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
-#include "ina219.h"
-#include "lcd.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -34,6 +32,9 @@
 #include "stm32f1xx_hal_def.h"
 #include "stm32f1xx_hal_gpio.h"
 #include "stm32f1xx_hal_i2c.h"
+#include "can_if.h"
+#include "ina219.h"
+#include "lcd.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -67,6 +68,8 @@
 ADC_HandleTypeDef hadc1;
 DMA_HandleTypeDef hdma_adc1;
 
+CAN_HandleTypeDef hcan;
+
 I2C_HandleTypeDef hi2c1;
 
 TIM_HandleTypeDef htim2;
@@ -96,6 +99,7 @@ static void MX_ADC1_Init(void);
 static void MX_TIM3_Init(void);
 static void MX_TIM4_Init(void);
 static void MX_I2C1_Init(void);
+static void MX_CAN_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -178,6 +182,7 @@ int main(void)
   MX_TIM3_Init();
   MX_TIM4_Init();
   MX_I2C1_Init();
+  MX_CAN_Init();
   /* USER CODE BEGIN 2 */
   printf("CTRL_IN_ISR=%d\r\n", CTRL_IN_ISR);
   uint32_t blink_ms = 500U;
@@ -246,6 +251,10 @@ int main(void)
     (void)lcd_print("Motor ECU");
   }
 
+  //Day 8: CAN 루프백 시작(필터 -> start -> 수신 인터럽트)
+  printf("CAN init=%d\r\n", (int)can_if_init(&hcan)); //0이면 성공
+
+
   if (HAL_TIM_Base_Start_IT(&htim2) != HAL_OK)
   {
     Error_Handler();
@@ -313,6 +322,7 @@ int main(void)
     // 100ms 태스크: LED 깜빡임
     if(g_flag_100ms != 0U)
     {
+      (void)can_if_send_test(); //100ms마다 0x123 송신
       g_flag_100ms= 0U;
       run_100ms++;
       printf("rpm_x10=%ld I_x10=%d mA V=%u mV\r\n", (long)encoder_get_rpm_x10(),
@@ -365,6 +375,14 @@ int main(void)
       printf("ina vaild= %u err=%lu rec=%lu\r\n", (unsigned)ina219_is_valid(),
               (unsigned long)ina219_get_err_count(),
               (unsigned long)ina219_get_recover_count());
+      {
+        can_if_stats_t cs;
+        can_if_get_stats(&cs);
+        printf("can tx=%lu fail=%lu rx=%lu miss=%lu last_tx=%u last_rx=%u\r\n",
+               (unsigned long)cs.tx_ok, (unsigned long)cs.tx_fail,
+               (unsigned long)cs.rx_count, (unsigned long)cs.rx_miss,
+               (unsigned)cs.last_tx, (unsigned)cs.last_rx);
+      }
       raw_min = ADC_MAX_COUNT; raw_max = 0U; //다음 1초를 다시 잼
       avg_min = ADC_MAX_COUNT; avg_max = 0U; 
       tick_count++;
@@ -464,6 +482,43 @@ static void MX_ADC1_Init(void)
   /* USER CODE BEGIN ADC1_Init 2 */
 
   /* USER CODE END ADC1_Init 2 */
+
+}
+
+/**
+  * @brief CAN Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_CAN_Init(void)
+{
+
+  /* USER CODE BEGIN CAN_Init 0 */
+
+  /* USER CODE END CAN_Init 0 */
+
+  /* USER CODE BEGIN CAN_Init 1 */
+
+  /* USER CODE END CAN_Init 1 */
+  hcan.Instance = CAN1;
+  hcan.Init.Prescaler = 4;
+  hcan.Init.Mode = CAN_MODE_LOOPBACK;
+  hcan.Init.SyncJumpWidth = CAN_SJW_1TQ;
+  hcan.Init.TimeSeg1 = CAN_BS1_13TQ;
+  hcan.Init.TimeSeg2 = CAN_BS2_2TQ;
+  hcan.Init.TimeTriggeredMode = DISABLE;
+  hcan.Init.AutoBusOff = DISABLE;
+  hcan.Init.AutoWakeUp = DISABLE;
+  hcan.Init.AutoRetransmission = DISABLE;
+  hcan.Init.ReceiveFifoLocked = DISABLE;
+  hcan.Init.TransmitFifoPriority = DISABLE;
+  if (HAL_CAN_Init(&hcan) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN CAN_Init 2 */
+
+  /* USER CODE END CAN_Init 2 */
 
 }
 
