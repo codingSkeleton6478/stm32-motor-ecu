@@ -21,7 +21,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "can_if.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -32,6 +32,11 @@
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 #define LED_PERIOD_MS   (500U) //LED 깜빡임 주기(ms),매직 넘버 대신 이름을 붙여둠
+#define LED_FAST_MS     (100U) //송신 막힘(ACK 없음) 표시용 빠른 깜빡임
+#define CMD_PERIOD_MS   (10U) // 0x100 송신 주기: 메시지 설계표 10ms
+#define SEQ_STEP_MS     (3000U) // S-4 시퀀스 한 단계 유지 시간 3초
+#define STATUS_TIMEOUT_MS (100u) // 0x200이 100ms(5주기) 넘게 없으면 상대 상태를 모름
+#define NUCLEO_STATE_FAULT (2U) 
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -40,14 +45,18 @@
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
+CAN_HandleTypeDef hcan;
 
 /* USER CODE BEGIN PV */
-
+//S-4 고정 시퀀스 (가변저항 대신). 3V 최고 약 58 rpm이라 가이드
+static const uint16_t k_seq_rpm[] = {0U, 20U, 35U, 20U};
+#define SEQ_LEN (sizeof(k_seq_rpm) / sizeof(k_seq_rpm[0])) //배열 길이 4
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
+static void MX_CAN_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -86,8 +95,11 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  MX_CAN_Init();
   /* USER CODE BEGIN 2 */
-
+  if (can_if_init() != HAL_OK) {
+    Error_Handler();   /* CAN 시작 실패 -> 여기서 멈춤 (LED가 깜빡이지 않음) */
+  }
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -97,7 +109,7 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-    //HAL_GetTick(): SysTick이 1ms마다 올려 주는 카운터(부팅 후 경과ms)
+    /*HAL_GetTick(): SysTick이 1ms마다 올려 주는 카운터(부팅 후 경과ms)
     static uint32_t s_led_last_ms = 0U; //마지막으로 토글한 시각, static이라 루프를 돌아도 값이 유지됨
     uint32_t now = HAL_GetTick();
 
@@ -107,6 +119,38 @@ int main(void)
       s_led_last_ms = now;
       //LED핀/LED_GIPO_Port는 CubeMx에서 PC13에 붙인 레이블 LED로 main.h에 자동 생성된 이름임
       HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin);
+    }       Day8 LED 깜빡임용으로 쓰던 코드*/
+
+    static uint32_t s_led_last_ms = 0U;
+    static uint32_t s_cmd_last_ms = 0U;
+    static uint32_t s_seq_last_ms = 0U;
+    static uint32_t s_seq_idx = 0U;      /* 지금 보내는 시퀀스 단계 0~3 */
+    uint32_t now = HAL_GetTick();
+
+    /* 3초마다 다음 목표 rpm으로 (마지막 다음은 처음으로) */
+    if ((now - s_seq_last_ms) >= SEQ_STEP_MS) {
+      s_seq_last_ms = now;
+      s_seq_idx = (s_seq_idx + 1U) % SEQ_LEN;
+    }
+
+    /* 10ms마다 0x100 송신 */
+    if ((now - s_cmd_last_ms) >= CMD_PERIOD_MS) {
+      s_cmd_last_ms = now;
+      (void)can_if_send_cmd(k_seq_rpm[s_seq_idx]);  /* 실패는 can_if 안에서 셈 */
+    }
+
+    /* LED 3가지 표시
+       - 계속 켜짐: ACK 없음(버스 끊김) / - 100ms 깜빡임: Nucleo FAULT 또는 상태 수신 끊김 / - 500ms: 정상 */
+    if (can_if_tx_stuck() != 0U) {
+      HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_RESET);   /* PB12 Low = 켜짐 (active-low) */
+    } else {
+      uint32_t led_period =
+          ((can_if_get_nucleo_state() == NUCLEO_STATE_FAULT) ||
+           (can_if_get_status_age_ms() > STATUS_TIMEOUT_MS)) ? LED_FAST_MS : LED_PERIOD_MS;
+      if ((now - s_led_last_ms) >= led_period) {
+        s_led_last_ms = now;
+        HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin);
+      }
     }
   }
   /* USER CODE END 3 */
@@ -152,6 +196,43 @@ void SystemClock_Config(void)
 }
 
 /**
+  * @brief CAN Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_CAN_Init(void)
+{
+
+  /* USER CODE BEGIN CAN_Init 0 */
+
+  /* USER CODE END CAN_Init 0 */
+
+  /* USER CODE BEGIN CAN_Init 1 */
+
+  /* USER CODE END CAN_Init 1 */
+  hcan.Instance = CAN1;
+  hcan.Init.Prescaler = 4;
+  hcan.Init.Mode = CAN_MODE_NORMAL;
+  hcan.Init.SyncJumpWidth = CAN_SJW_1TQ;
+  hcan.Init.TimeSeg1 = CAN_BS1_15TQ;
+  hcan.Init.TimeSeg2 = CAN_BS2_2TQ;
+  hcan.Init.TimeTriggeredMode = DISABLE;
+  hcan.Init.AutoBusOff = ENABLE;
+  hcan.Init.AutoWakeUp = DISABLE;
+  hcan.Init.AutoRetransmission = ENABLE;
+  hcan.Init.ReceiveFifoLocked = DISABLE;
+  hcan.Init.TransmitFifoPriority = DISABLE;
+  if (HAL_CAN_Init(&hcan) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN CAN_Init 2 */
+
+  /* USER CODE END CAN_Init 2 */
+
+}
+
+/**
   * @brief GPIO Initialization Function
   * @param None
   * @retval None
@@ -165,8 +246,8 @@ static void MX_GPIO_Init(void)
   /* USER CODE END MX_GPIO_Init_1 */
 
   /* GPIO Ports Clock Enable */
-  __HAL_RCC_GPIOC_CLK_ENABLE();
   __HAL_RCC_GPIOD_CLK_ENABLE();
+  __HAL_RCC_GPIOB_CLK_ENABLE();
   __HAL_RCC_GPIOA_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */

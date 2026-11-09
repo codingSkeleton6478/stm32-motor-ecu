@@ -35,6 +35,7 @@
 #include "can_if.h"
 #include "ina219.h"
 #include "lcd.h"
+#include "fault.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -254,6 +255,7 @@ int main(void)
   //Day 8: CAN 루프백 시작(필터 -> start -> 수신 인터럽트)
   printf("CAN init=%d\r\n", (int)can_if_init(&hcan)); //0이면 성공
 
+  fault_init(); //제어 ISR시작전에 안전 상태로 초기화
 
   if (HAL_TIM_Base_Start_IT(&htim2) != HAL_OK)
   {
@@ -315,6 +317,10 @@ int main(void)
       {
         ina_div = 0U;
         (void)ina219_read(&ina_i_x10, &ina_bus_mv);
+        (void)can_if_send_status((int16_t)(ctrl_get_rpm_x10() / 10),
+                                  (ina_i_x10 > 0) ? (uint16_t)(ina_i_x10 / 10) : 0U,
+                                  (uint8_t)fault_get_state(),
+                                  fault_get_code());
       }
 
     }
@@ -322,7 +328,6 @@ int main(void)
     // 100ms 태스크: LED 깜빡임
     if(g_flag_100ms != 0U)
     {
-      (void)can_if_send_test(); //100ms마다 0x123 송신
       g_flag_100ms= 0U;
       run_100ms++;
       printf("rpm_x10=%ld I_x10=%d mA V=%u mV\r\n", (long)encoder_get_rpm_x10(),
@@ -343,6 +348,11 @@ int main(void)
         lcd_div = 0U;
         int32_t rpm = (int32_t)ctrl_get_rpm_x10() / 10;        /* 0.1rpm 단위 → rpm 정수 */
         int32_t tgt = (int32_t)ctrl_get_target_rpm();          /* 목표 rpm */
+        static const char *const k_st[] = {"STP", "RUN", "FLT"};  /* ecu_state_t 순서와 같게 */
+        ecu_state_t st = fault_get_state();
+        /* LCD 3칸에 맞게 0~999로 제한: 이상값이 줄을 밀어내지 않고, 컴파일러도 길이를 확정할 수 있다 */
+        if (rpm < 0) { rpm = 0; } else if (rpm > 999) { rpm = 999; }
+        if (tgt < 0) { tgt = 0; } else if (tgt > 999) { tgt = 999; }
         (void)snprintf(lcd_line, sizeof(lcd_line), "T:%3ld R:%3ld", (long)tgt, (long)rpm);
         (void)lcd_print_line(0U, lcd_line);
 
@@ -378,11 +388,15 @@ int main(void)
       {
         can_if_stats_t cs;
         can_if_get_stats(&cs);
-        printf("can tx=%lu fail=%lu rx=%lu miss=%lu last_tx=%u last_rx=%u\r\n",
-               (unsigned long)cs.tx_ok, (unsigned long)cs.tx_fail,
-               (unsigned long)cs.rx_count, (unsigned long)cs.rx_miss,
-               (unsigned)cs.last_tx, (unsigned)cs.last_rx);
+        /* age = 마지막 유효 프레임 이후 경과 ms. 정상이면 0~10, 선이 빠지면 계속 커진다 */
+        printf("can ok=%lu cs=%lu alive=%lu dlc=%lu cons=%u rpm=%u a=%u age=%lu\r\n",
+               (unsigned long)cs.rx_ok, (unsigned long)cs.err_checksum,
+               (unsigned long)cs.err_alive, (unsigned long)cs.err_dlc,
+               (unsigned)cs.consec_err, (unsigned)cs.last_rpm, (unsigned)cs.last_alive,
+               (unsigned long)(HAL_GetTick() - cs.last_ok_ms));
+        printf("ecu st=%u fc=0x%02X\r\n", (unsigned)fault_get_state(), (unsigned)fault_get_code());
       }
+      
       raw_min = ADC_MAX_COUNT; raw_max = 0U; //다음 1초를 다시 잼
       avg_min = ADC_MAX_COUNT; avg_max = 0U; 
       tick_count++;
@@ -502,14 +516,14 @@ static void MX_CAN_Init(void)
   /* USER CODE END CAN_Init 1 */
   hcan.Instance = CAN1;
   hcan.Init.Prescaler = 4;
-  hcan.Init.Mode = CAN_MODE_LOOPBACK;
+  hcan.Init.Mode = CAN_MODE_NORMAL;
   hcan.Init.SyncJumpWidth = CAN_SJW_1TQ;
   hcan.Init.TimeSeg1 = CAN_BS1_13TQ;
   hcan.Init.TimeSeg2 = CAN_BS2_2TQ;
   hcan.Init.TimeTriggeredMode = DISABLE;
-  hcan.Init.AutoBusOff = DISABLE;
+  hcan.Init.AutoBusOff = ENABLE;
   hcan.Init.AutoWakeUp = DISABLE;
-  hcan.Init.AutoRetransmission = DISABLE;
+  hcan.Init.AutoRetransmission = ENABLE;
   hcan.Init.ReceiveFifoLocked = DISABLE;
   hcan.Init.TransmitFifoPriority = DISABLE;
   if (HAL_CAN_Init(&hcan) != HAL_OK)
@@ -861,6 +875,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 #if (CTRL_IN_ISR != 0)
       /* A: ISR 안에서 바로 실행. main이 무엇을 하든(LCD 블로킹 중이어도) 10ms마다 끼어들어 실행된다 */
       HAL_GPIO_WritePin(DBG_TIMING_GPIO_Port, DBG_TIMING_Pin, GPIO_PIN_SET);   /* PB0 High: 제어 시작 */
+      fault_step_10ms();         /* 통신 상태 판단 -> 목표값 적용 또는 안전 상태 */
       ctrl_step_10ms();          /* 엔코더 -> PI -> PWM */
       HAL_GPIO_WritePin(DBG_TIMING_GPIO_Port, DBG_TIMING_Pin, GPIO_PIN_RESET); /* PB0 Low: 제어 끝 */
 #endif

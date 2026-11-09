@@ -53,6 +53,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Core/Src/ina219.c
     Core/Src/lcd.c
     Core/Src/can_if.c
+    Core/Src/fault.c
 )
 
 # Add include paths
