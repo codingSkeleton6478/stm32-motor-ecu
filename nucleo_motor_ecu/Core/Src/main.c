@@ -58,6 +58,9 @@
  *             0 = main loop의 10ms 태스크에서 실행(비교용, B)
  * 실험이 끝나면 반드시 1로 되돌린다 */
 #define CTRL_IN_ISR        (1)
+#define STATUS_DIV_10MS    (2U) //0x200 주기 20ms
+#define FI06_TEST          (0)  //FI-06 시험용: 1 = B1 버튼 누르면 main을 일부러 멈춤. 시험 후 반드시 0
+
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -73,6 +76,8 @@ CAN_HandleTypeDef hcan;
 
 I2C_HandleTypeDef hi2c1;
 
+IWDG_HandleTypeDef hiwdg;
+
 TIM_HandleTypeDef htim2;
 TIM_HandleTypeDef htim3;
 TIM_HandleTypeDef htim4;
@@ -87,6 +92,8 @@ static volatile uint32_t g_flag_10ms = 0U;
 static volatile uint32_t g_flag_100ms = 0U;
 static volatile uint32_t g_flag_1000ms = 0U;
 static volatile uint16_t adc_buf[1];    // DMA가 여기에 최신 변환 값을 계속 덮어 씀(ISR/DMA와 main이 공유 -> volatile)
+static volatile uint16_t g_ina_ma = 0U; /*main이 INA219로 읽은 전류(mA)
+                                        TIM2 ISR이 0x200에 실어 보낸다. ISR과 main이 같이 쓰므로 volatile. 16비트 값*/
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -101,6 +108,7 @@ static void MX_TIM3_Init(void);
 static void MX_TIM4_Init(void);
 static void MX_I2C1_Init(void);
 static void MX_CAN_Init(void);
+static void MX_IWDG_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -154,6 +162,7 @@ int main(void)
 {
 
   /* USER CODE BEGIN 1 */
+  
 
   /* USER CODE END 1 */
 
@@ -186,6 +195,20 @@ int main(void)
   MX_CAN_Init();
   /* USER CODE BEGIN 2 */
   printf("CTRL_IN_ISR=%d\r\n", CTRL_IN_ISR);
+    /* SR-06: 리셋 원인 확인. RCC->CSR의 플래그는 리셋돼도 남아 있다가 직접 지워야 사라진다 */
+  if (__HAL_RCC_GET_FLAG(RCC_FLAG_IWDGRST) != 0U)
+  {
+    printf("reset by watchdog\r\n");      /* 지난번에 소프트웨어가 멈춰 IWDG가 리셋함 */
+  }
+  else if (__HAL_RCC_GET_FLAG(RCC_FLAG_PINRST) != 0U)
+  {
+    printf("reset by NRST pin\r\n");      /* 리셋 버튼, 또는 디버거가 건 리셋 */
+  }
+  else
+  {
+    /* 그 밖(전원 켬 등) */
+  }
+  __HAL_RCC_CLEAR_RESET_FLAGS();          /* RMVF 비트로 전부 지움 -> 다음 리셋 때 새 원인만 남음 */
   uint32_t blink_ms = 500U;
   uint32_t blink_acc = 0U;
   uint32_t last_btn = 0U;
@@ -261,6 +284,9 @@ int main(void)
   {
     Error_Handler();
   }
+    __HAL_DBGMCU_FREEZE_IWDG();   /* 디버거가 CPU를 세우면 IWDG도 멈춤(브레이크포인트에서 리셋 방지) */
+  MX_IWDG_Init();               /* 초기화가 다 끝난 뒤에 켠다. 한 번 켜면 끌 수 없음 */
+  printf("IWDG on (~100ms)\r\n");
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -270,6 +296,7 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+    HAL_IWDG_Refresh(&hiwdg);   /* SR-06: main loop가 한 바퀴 돌 때마다 카운터를 125로 되돌림 */
     cmd_poll();
     if(g_btn_pressed != 0U)
     {
@@ -280,6 +307,13 @@ int main(void)
         last_btn = now;
         blink_ms = (blink_ms == 500U) ? 100U : 500U;
         printf("blink %lu ms\r\n", (unsigned long)blink_ms);
+        #if (FI06_TEST != 0)
+        printf("FI-06: hang\r\n");   /* 이 줄이 찍힌 뒤 main이 멈춘다 */
+        while (1)
+        {
+          /* SR-06 시험: 여기서 HAL_IWDG_Refresh()가 더 이상 불리지 않음 -> 약 100ms 뒤 IWDG 리셋 */
+        }
+        #endif
       }
     }
 
@@ -317,10 +351,9 @@ int main(void)
       {
         ina_div = 0U;
         (void)ina219_read(&ina_i_x10, &ina_bus_mv);
-        (void)can_if_send_status((int16_t)(ctrl_get_rpm_x10() / 10),
-                                  (ina_i_x10 > 0) ? (uint16_t)(ina_i_x10 / 10) : 0U,
-                                  (uint8_t)fault_get_state(),
-                                  fault_get_code());
+        /*0x200 송신은 TIM2 ISR로 옮김. 여기서는 전류 값만 넘긴다(0.1mA 단위 -> mA, 음수는 0)*/
+        g_ina_ma = (ina_i_x10 > 0) ? (uint16_t)(ina_i_x10 / 10) : 0U;
+        fault_set_current(g_ina_ma, ina219_is_valid()); //SR-04/08: 판정은 ISR이 하고 main은 값만 넘김
       }
 
     }
@@ -353,16 +386,20 @@ int main(void)
         /* LCD 3칸에 맞게 0~999로 제한: 이상값이 줄을 밀어내지 않고, 컴파일러도 길이를 확정할 수 있다 */
         if (rpm < 0) { rpm = 0; } else if (rpm > 999) { rpm = 999; }
         if (tgt < 0) { tgt = 0; } else if (tgt > 999) { tgt = 999; }
-        (void)snprintf(lcd_line, sizeof(lcd_line), "T:%3ld R:%3ld", (long)tgt, (long)rpm);
+        (void)snprintf(lcd_line, sizeof(lcd_line), "T:%3ld R:%3ld %s", (long)tgt, (long)rpm, k_st[(uint32_t)st]);
         (void)lcd_print_line(0U, lcd_line);
 
         if (ina219_is_valid() != 0U)
         {
-          /* float printf를 안 쓰려고 정수로 나눠 소수점을 직접 만든다 (nano libc는 %f 미지원이 기본) */
-          (void)snprintf(lcd_line, sizeof(lcd_line), "I:%4dmA V:%u.%02u",
-                         (int)(ina_i_x10 / 10),                   /* 0.1mA 단위 → mA */
-                         (unsigned)(ina_bus_mv / 1000U),          /* 정수 V */
-                         (unsigned)((ina_bus_mv % 1000U) / 10U)); /* 소수 둘째 자리 */
+          /* LCD 칸 수에 맞게 범위를 먼저 자른다.
+          전류 -999~9999mA(최대 4글자), 전압 정수부 0~9V(1글자) -> "I:9999mA V:9.99" = 15글자 + '\0' = 16칸 <= 17칸 */
+          int32_t  ma   = (int32_t)ina_i_x10 / 10;          /* 0.1mA 단위 → mA */
+          uint32_t v_i  = (uint32_t)ina_bus_mv / 1000U;     /* 정수 V */
+          uint32_t v_f  = ((uint32_t)ina_bus_mv % 1000U) / 10U;  /* 소수 둘째 자리 (0~99) */
+          if (ma < -999) { ma = -999; } else if (ma > 9999) { ma = 9999; }
+          if (v_i > 9U) { v_i = 9U; }   /* 우리 전원은 약 3V. 9V 넘는 값은 이상값이라 표시만 제한 */
+          (void)snprintf(lcd_line, sizeof(lcd_line), "I:%4ldmA V:%lu.%02lu",
+                         (long)ma, (unsigned long)v_i, (unsigned long)v_f);
         }
         else
         {
@@ -420,9 +457,10 @@ void SystemClock_Config(void)
   /** Initializes the RCC Oscillators according to the specified parameters
   * in the RCC_OscInitTypeDef structure.
   */
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI|RCC_OSCILLATORTYPE_LSI;
   RCC_OscInitStruct.HSIState = RCC_HSI_ON;
   RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
+  RCC_OscInitStruct.LSIState = RCC_LSI_ON;
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
   RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI_DIV2;
   RCC_OscInitStruct.PLL.PLLMUL = RCC_PLL_MUL16;
@@ -567,6 +605,34 @@ static void MX_I2C1_Init(void)
   /* USER CODE BEGIN I2C1_Init 2 */
 
   /* USER CODE END I2C1_Init 2 */
+
+}
+
+/**
+  * @brief IWDG Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_IWDG_Init(void)
+{
+
+  /* USER CODE BEGIN IWDG_Init 0 */
+
+  /* USER CODE END IWDG_Init 0 */
+
+  /* USER CODE BEGIN IWDG_Init 1 */
+
+  /* USER CODE END IWDG_Init 1 */
+  hiwdg.Instance = IWDG;
+  hiwdg.Init.Prescaler = IWDG_PRESCALER_32;
+  hiwdg.Init.Reload = 125;
+  if (HAL_IWDG_Init(&hiwdg) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN IWDG_Init 2 */
+
+  /* USER CODE END IWDG_Init 2 */
 
 }
 
@@ -870,13 +936,26 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
       /* DAY6이전에 사용한 HAL Timer 코드
       HAL_GPIO_WritePin(DBG_TIMING_GPIO_Port, DBG_TIMING_Pin, GPIO_PIN_SET);   // PB0 High: 제어 시작 
       ctrl_step_10ms();  // 엔코더 -> PI -> PWM 
-      HAL_GPIO_WritePin(DBG_TIMING_GPIO_Port, DBG_TIMING_Pin, GPIO_PIN_RESET); /* PB0 Low: 제어 끝 */ 
+      HAL_GPIO_WritePin(DBG_TIMING_GPIO_Port, DBG_TIMING_Pin, GPIO_PIN_RESET);  PB0 Low: 제어 끝  */
       //
 #if (CTRL_IN_ISR != 0)
       /* A: ISR 안에서 바로 실행. main이 무엇을 하든(LCD 블로킹 중이어도) 10ms마다 끼어들어 실행된다 */
       HAL_GPIO_WritePin(DBG_TIMING_GPIO_Port, DBG_TIMING_Pin, GPIO_PIN_SET);   /* PB0 High: 제어 시작 */
       fault_step_10ms();         /* 통신 상태 판단 -> 목표값 적용 또는 안전 상태 */
       ctrl_step_10ms();          /* 엔코더 -> PI -> PWM */
+      {
+        static uint8_t s_status_div = 0U; //static:함수가 끝나도 값이 남아 있는 카운터
+        if(++s_status_div >= STATUS_DIV_10MS)
+        {
+          s_status_div = 0U;
+          //송신 메일 박스에 넣기만 하고 바로 돌아온다(전송 완료를 기다리지 않음) -> ISR이 길어지지 않음.
+          //메일 박스 3개가 다 차있으면(상대 없음) HAL_BUSY로 그냥 건너 뛴다.
+          (void)can_if_send_status((uint16_t)(ctrl_get_rpm_x10() / 10),
+                                    g_ina_ma,
+                                    (uint8_t)fault_get_state(),
+                                    fault_get_code());
+        }
+      }
       HAL_GPIO_WritePin(DBG_TIMING_GPIO_Port, DBG_TIMING_Pin, GPIO_PIN_RESET); /* PB0 Low: 제어 끝 */
 #endif
     }

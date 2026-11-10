@@ -12,6 +12,8 @@ extern CAN_HandleTypeDef hcan; //main.c에서 CubeMX가 만든 핸들을 빌려�
 
 static uint8_t  s_alive = 0U; //다음에 보낼 alive counter
 static uint32_t s_tx_fail = 0U;
+static volatile uint8_t s_fi03_on = 0U; //FI-03 시험: 1이면 체크섬을 일부로 틀리게 보냄
+void can_if_set_fi03(uint8_t on) { s_fi03_on = on;}
 
 //체크섬 = (B0 ^ B1 ^ B2) ^ 0xFF. 받는 쪽(뉴클레오)도 같은 식으로 계산해서 비교함
 static uint8_t calc_checksum(const uint8_t *d)
@@ -84,6 +86,9 @@ HAL_StatusTypeDef can_if_send_cmd(uint16_t  target_rpm)
     d[1] = (uint8_t)(target_rpm >> 8);
     d[2] = s_alive;
     d[3] = calc_checksum(d); //B0~B2를 다 채운 뒤 계산
+    if (s_fi03_on != 0U) {
+        d[3] ^= 0x01U;   /* FI-03: 체크섬 최하위 1비트 반전 -> Nucleo가 체크섬 오류로 버려야 함 */
+    }
 
     st = HAL_CAN_AddTxMessage(&hcan, &hdr, d, &mailbox);
     if(st == HAL_OK) 

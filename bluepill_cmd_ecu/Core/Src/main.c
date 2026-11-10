@@ -37,6 +37,8 @@
 #define SEQ_STEP_MS     (3000U) // S-4 시퀀스 한 단계 유지 시간 3초
 #define STATUS_TIMEOUT_MS (100u) // 0x200이 100ms(5주기) 넘게 없으면 상대 상태를 모름
 #define NUCLEO_STATE_FAULT (2U) 
+#define FI03_PORT  GPIOB         /* FI-03 스위치: BOOT1 점퍼 가운데 핀 = R1 경유 PB2 */
+#define FI03_PIN   GPIO_PIN_2    /* 캡 −(GND) = 평상시, 캡 +(3.3V) = 체크섬 오염 */
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -136,6 +138,8 @@ int main(void)
     /* 10ms마다 0x100 송신 */
     if ((now - s_cmd_last_ms) >= CMD_PERIOD_MS) {
       s_cmd_last_ms = now;
+      /* BOOT1 캡이 + 쪽(PB2 = High)이면 이번 프레임은 체크섬을 틀리게 보냄 */
+      can_if_set_fi03((HAL_GPIO_ReadPin(FI03_PORT, FI03_PIN) == GPIO_PIN_SET) ? 1U : 0U);
       (void)can_if_send_cmd(k_seq_rpm[s_seq_idx]);  /* 실패는 can_if 안에서 셈 */
     }
 
@@ -261,7 +265,11 @@ static void MX_GPIO_Init(void)
   HAL_GPIO_Init(LED_GPIO_Port, &GPIO_InitStruct);
 
   /* USER CODE BEGIN MX_GPIO_Init_2 */
-
+  /* FI-03 스위치: 입력. 레벨은 BOOT1 점퍼 캡이 R1을 통해 정해 주므로 내부 풀업/풀다운 없음 */
+  GPIO_InitStruct.Pin  = FI03_PIN;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(FI03_PORT, &GPIO_InitStruct);
   /* USER CODE END MX_GPIO_Init_2 */
 }
 
