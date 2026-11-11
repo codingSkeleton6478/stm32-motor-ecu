@@ -5,7 +5,7 @@
 #include "motor.h"
 #include "encoder.h"
 
-/* ---- 판정 기준값 (근거는 progress.md 측정값 표) ---- */
+/* ---- 판정 기준값 (근거는 docs/measurements.md) ---- */
 #define CAN_TIMEOUT_MS      (100U)  /* SR-02: 유효 CMD가 10주기(100ms) 넘게 없으면 고장 */
 #define CAN_E2E_ERR_MAX     (3U)    /* SR-03: 체크섬·alive 오류 3회 연속이면 고장 */
 

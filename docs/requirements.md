@@ -1,7 +1,7 @@
 # 안전 요구사항 (SR) 과 검증 추적표
 
 모터 ECU(NUCLEO-F103RB)의 안전 관련 요구사항이다. 각 요구사항은 코드 주석(`/* SR-xx */`)과 시험 ID(FI-xx)로 추적된다.
-수치는 `docs/progress.md` 측정값 표의 실측값만 사용한다.
+수치는 `docs/measurements.md`의 실측값만 사용한다.
 
 ## 1. 요구사항
 

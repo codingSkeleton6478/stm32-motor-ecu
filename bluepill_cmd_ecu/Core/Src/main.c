@@ -34,7 +34,7 @@
 #define LED_PERIOD_MS   (500U) //LED 깜빡임 주기(ms),매직 넘버 대신 이름을 붙여둠
 #define LED_FAST_MS     (100U) //송신 막힘(ACK 없음) 표시용 빠른 깜빡임
 #define CMD_PERIOD_MS   (10U) // 0x100 송신 주기: 메시지 설계표 10ms
-#define SEQ_STEP_MS     (3000U) // S-4 시퀀스 한 단계 유지 시간 3초
+#define SEQ_STEP_MS     (3000U) // 자동 속도 시퀀스 한 단계 유지 시간 3초
 #define STATUS_TIMEOUT_MS (100u) // 0x200이 100ms(5주기) 넘게 없으면 상대 상태를 모름
 #define NUCLEO_STATE_FAULT (2U) 
 #define FI03_PORT  GPIOB         /* FI-03 스위치: BOOT1 점퍼 가운데 핀 = R1 경유 PB2 */
@@ -50,7 +50,7 @@
 CAN_HandleTypeDef hcan;
 
 /* USER CODE BEGIN PV */
-//S-4 고정 시퀀스 (가변저항 대신). 3V 최고 약 58 rpm이라 가이드
+//고정 속도 시퀀스 (가변저항 대신). 3V 최고 약 58 rpm이라 그 안에서 0/20/35/20 rpm
 static const uint16_t k_seq_rpm[] = {0U, 20U, 35U, 20U};
 #define SEQ_LEN (sizeof(k_seq_rpm) / sizeof(k_seq_rpm[0])) //배열 길이 4
 /* USER CODE END PV */

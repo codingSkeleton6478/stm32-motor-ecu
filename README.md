@@ -58,7 +58,7 @@ STM32로 **모터를 직접 돌려 보고, 두 보드끼리 CAN 통신을 해 �
 
 ## 보드 구성
 
-모든 수치는 직접 측정한 값입니다(근거: [`docs/progress.md`](docs/progress.md) 측정값 표, [`docs/test_report.md`](docs/test_report.md)).
+모든 수치는 직접 측정한 값입니다(근거: [`docs/measurements.md`](docs/measurements.md), [`docs/test_report.md`](docs/test_report.md)).
 
 | 노드 | 보드 | 역할 |
 |---|---|---|
@@ -152,8 +152,7 @@ stm32-motor-ecu/
 ├── nucleo_motor_ecu/     # 모터 ECU (CubeMX + CMake)
 ├── bluepill_cmd_ecu/     # 명령 ECU (CubeMX + CMake)
 └── docs/
-    ├── progress.md       # 진행 기록, 측정값
-    ├── lab_guide.md      # 10일 실습 가이드
+    ├── measurements.md   # 측정값 (모든 수치의 근거)
     ├── requirements.md   # 안전 요구사항 SR-01~08
     ├── test_report.md    # 고장 주입 시험 FI-01~07
     ├── images/           # 하드웨어 사진, 시스템 구성도(draw.io)

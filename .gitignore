@@ -24,3 +24,9 @@ __pycache__/
 Thumbs.db
 
 build/
+
+# 개인 작업 메모 (저장소에 올리지 않음)
+CLAUDE.md
+docs/lab_guide.md
+docs/pot_substitute.md
+docs/progress.md
